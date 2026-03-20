@@ -8,13 +8,10 @@ import json
 sys.path.insert(0, os.path.join(os.getcwd(), 'chronoepilogi_implementation'))
 
 
-sys.path.insert(0, os.path.join(os.getcwd(), 'chronoepilogi_implementation'))
-
-# Now import the class
 from ce_extensions2 import ChronoEpilogi
 
 
-def OHE_chrono(db, col_to_ohe,target, target_type, lag, reduce_data):
+def OHE_chrono(db, col_to_ohe,target, lag, identifier):
 
     """Implement chronoepilogi on a dataBase with a one-hot-encoding (ohe)
 
@@ -34,21 +31,12 @@ def OHE_chrono(db, col_to_ohe,target, target_type, lag, reduce_data):
     ##One-Hot encoding 
     column_to_OHE = col_to_ohe
 
-    #########################################################
-    # THIS CAN BE USED TO REDUCE THE DATASET SIZE IF NEEDED
-    if reduce_data == True:
-        non_na_rows = db[~db[column_to_OHE[0]].isna()]
-        na_rows = db[db[column_to_OHE[0]].isna()].sample(n=3000, random_state=42)  # Adjust 'n' as needed
-        db_sampled = pd.concat([non_na_rows, na_rows])
-        db_sampled.sort_values(by=["Date_Time", "EPISODE_ID"], inplace=True)
-        db=db_sampled.copy()
-    ##########################################################
 
     db_encoded = pd.get_dummies(db, prefix=col_to_ohe[0], columns=col_to_ohe)
     print(f"Size of the sampled database: {db_encoded.shape}")
 
     ##Dropping of EPISODE_ID and DateTime to not let them appear in the Markov Boundaries
-    db_encoded = db_encoded.drop(columns="EPISODE_ID")
+    db_encoded = db_encoded.drop(columns=identifier)
 
     column_names = db_encoded.columns.tolist()
 
@@ -73,24 +61,17 @@ def OHE_chrono(db, col_to_ohe,target, target_type, lag, reduce_data):
     for col in numerical_columns:
         X[col] = X[col].fillna(X[col].mean())
 
-    ## Data summary
-    
-    print(f"Keeping {len(numerical_columns)+len(categorical_columns)+len(target)} columns:")
-    print(f"Categorical columns: {len(categorical_columns)}")
-    print(f"Numerical columns: {len(numerical_columns)}")
-    print(f"Target:{target}")
-
-    print(target)
 
     variable_types = {
         **{col: "numerical" for col in numerical_columns},
         **{col: "categorical" for col in categorical_columns}
     }
 
+    # Calling of CE
     fs_instance = ChronoEpilogi(
         X,
         target,
-        phases="FB",
+        phases="FBEV",
         target_type= "continuous",
         start_with_univariate_autoregressive_model=False,
         default_max_lag=lag,  
@@ -98,9 +79,6 @@ def OHE_chrono(db, col_to_ohe,target, target_type, lag, reduce_data):
     )
 
     fs_instance.fit()
-
-    print("selected set:", fs_instance.selected_set)
-    print("length of selected set:",len(fs_instance.selected_set),"and number of covariates in the dataset:",len(X.columns) -1)
     
     data = {
     "selected set": fs_instance.selected_set,
@@ -109,6 +87,9 @@ def OHE_chrono(db, col_to_ohe,target, target_type, lag, reduce_data):
 }
 
     json_str = json.dumps(data, indent=3)
-    with open(col_to_ohe[0]+"_lag_"+str(lag)+".json", "w") as f:
+    filename = f"results/{col_to_ohe[0]+"_lag_"+str(lag)}.json"
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+    with open(filename, "w") as f:
         f.write(json_str)
-    
+    print(f'results saved here {filename}')
