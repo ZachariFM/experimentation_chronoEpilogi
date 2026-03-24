@@ -11,17 +11,20 @@ sys.path.insert(0, os.path.join(os.getcwd(), 'chronoepilogi_implementation'))
 from ce_extensions2 import ChronoEpilogi
 
 
-def OHE_chrono(db, col_to_ohe,target, lag, identifier):
+def OHE_chrono(db, col_to_ohe,target, lag, identifier, keep_dummies = False):
 
     """Implement chronoepilogi on a dataBase with a one-hot-encoding (ohe)
 
     Parameters: 
         db : database on wich the the algorithm is run 
-        columns : set of columns the ohe is implemented (the numericals columns are left untouched)
-                  format : list
+
+        col_to_ohe : set of columns upon which the ohe is implemented (the numericals columns are left untouched)
+
         target : column's name that are used as target for prediction
-                 format : list
-        target_type : continuous or ???
+        
+        lag: Value of the lag chosen
+
+        identifier : A list containing the column names for (id, time_step)
 
     Notes : 
 
@@ -29,8 +32,10 @@ def OHE_chrono(db, col_to_ohe,target, lag, identifier):
 
     ##Cleaning of all the row having a nan for a columns 
     ##One-Hot encoding 
-    column_to_OHE = col_to_ohe
+    
 
+    original_columns = db.columns.tolist()
+    print(original_columns)
 
     db_encoded = pd.get_dummies(db, prefix=col_to_ohe[0], columns=col_to_ohe)
     print(f"Size of the sampled database: {db_encoded.shape}")
@@ -39,7 +44,6 @@ def OHE_chrono(db, col_to_ohe,target, lag, identifier):
     db_encoded = db_encoded.drop(columns=identifier)
 
     column_names = db_encoded.columns.tolist()
-
 
     ## we take all the columns that are of type float and the categorical one we want for the model
     numerical_columns = [col for col in column_names if db_encoded[col].dtype == np.float64 and col != target]
@@ -79,12 +83,12 @@ def OHE_chrono(db, col_to_ohe,target, lag, identifier):
     )
 
     fs_instance.fit()
-    
+
     data = {
-    "selected set": fs_instance.selected_set,
-    "length of selected set" :len(fs_instance.selected_set),
-    "and number of covariates in the dataset" :len(X.columns) -1,
-}
+        "selected set": fs_instance.selected_set,
+        "length of selected set" :len(fs_instance.selected_set),
+        "and number of covariates in the dataset" :len(X.columns) -1,
+    }
 
     json_str = json.dumps(data, indent=3)
     filename = f"results/{col_to_ohe[0]+"_lag_"+str(lag)}.json"

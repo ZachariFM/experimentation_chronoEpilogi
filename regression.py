@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import importlib
 from datetime import datetime
@@ -7,12 +8,10 @@ from scipy import stats
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.linear_model import LinearRegression 
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-import numpy as np
 from sklearn.linear_model import RidgeCV, LassoCV, ElasticNetCV
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.linear_model import RidgeCV, LassoCV, ElasticNetCV
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score
 import xgboost as xgb
@@ -64,9 +63,6 @@ class LearningModel:
     scaler : StandardScaler
         Fitted scaler used for numerical features (fitted on training data only).
 
-    Notes
-    -----
-    - The code distinguishes between numerical and categorical columns based on dtype (float64 vs others).
 
     """
 
@@ -90,7 +86,7 @@ class LearningModel:
     
     def create_split(self):
         """
-            Split the database along the identifier given (Id Column)
+            Split the database along the identifier given
         """
         idColumns = self.db[self.identifier].unique()
         splitter = GroupShuffleSplit(n_splits=1, test_size=self.test_size,  
@@ -105,9 +101,6 @@ class LearningModel:
 
         if self.ep_split == None:
             self.ep_split = self.create_split()
-
-        # Not good to dropna it might be useful information
-        #self.db = self.db.dropna()
 
        
         # we do a OHE if there is a selected columns to perform the OHE on 
@@ -333,13 +326,41 @@ class LearningModel:
 
 class ARIMAModel:
     """
+    A wrapper class for SARIMAX time-series modeling designed for Remaining Useful Life (RUL) prediction. 
 
+    Parameters:
+    db : The input database containing time-series data for multiple units.
+        
+    identifier : A list containing the column names for (id, time_step). 
+
+    target : The name of th variable to be predicted.
+        
+    exog_features : A list of column names to be used as exogenous variables in the SARIMAX model.
+        
+    ohe_columns : Subset of exog_features that are categorical and require One-Hot Encoding.
+        
+    scale_exog :If True, applies StandardScaler to the numerical exogenous features.
+        
+    test_size : The fraction of total units to reserve for the test set if ep_split is not provided.
+        
+    ep_split : An explicit split provided as (train_unit_ids, test_unit_ids) if there is a need to custom splitting
+        
+    random_state :The seed used for the random split to ensure reproducibility.
+        
+    order : The (p, d, q) order of the ARIMA model, representing the Autoregressive, 
+        Integrated, and Moving Average components.
+        
+    seasonal_order : The (P, D, Q, s) seasonal component of the model.
+        
+    gap_size : The number of NaN values to insert between different unit sequences. 
+        
+    naming : A descriptive prefix used for plot titles and identification.
     """
     def __init__(self, db, identifier, target='RUL', exog_features=None,
                  ohe_columns=None, scale_exog=False,
-                 test_size=0.2, random_state=42,
+                 test_size=0.2, ep_split = None,  random_state=42,
                  order=(1,0,0), seasonal_order=(0,0,0,0),
-                 gap_size=None):
+                 gap_size=None, naming = None):
         self.db = db
         self.id_col, self.time_col = identifier
         self.target = target
@@ -355,6 +376,13 @@ class ARIMAModel:
         self.scaler = None             
         self.ohe_feature_names_ = None
 
+        if ep_split:
+            self.train_units = ep_split[0]
+            self.test_units = ep_split[1]
+        else:
+            self.train_units = None
+            self.test_units = None            
+
         self.ep_split = None
         self._create_unit_split()
 
@@ -366,22 +394,45 @@ class ARIMAModel:
         max_lag = max(p, P)
         self.gap_size = gap_size if gap_size is not None else max_lag + 1
 
+        self.naming = naming
+
+    
     def _create_unit_split(self):
-        units = self.db[self.id_col].unique()
-        splitter = GroupShuffleSplit(n_splits=1, test_size=self.test_size,
-                                     random_state=self.random_state)
-        train_idx, test_idx = next(splitter.split(units, groups=units))
-        self.ep_split = {'train': units[train_idx],'test': units[test_idx]}
+
+        if self.train_units is not None and self.test_units is not None:
+               
+            self.ep_split ={   
+                'train': np.array(self.train_units),
+                'test': np.array(self.test_units)
+        }
+            print(f"Train units: {len(self.ep_split['train'])} | Test units: {len(self.ep_split['test'])}")
+            return
+            
+        else:
+            units = self.db[self.id_col].unique()
+            splitter = GroupShuffleSplit(n_splits=1, test_size=self.test_size,
+                                        random_state=self.random_state)
+            train_idx, test_idx = next(splitter.split(units, groups=units))
+            self.ep_split = {'train': units[train_idx],'test': units[test_idx]}
 
         print(f"Train units: {len(self.ep_split['train'])} | Test units: {len(self.ep_split['test'])}")
 
     def _prepare_series(self, unit_ids, fit_preprocessor=False):
 
-        if not unit_ids:
+        if len(unit_ids) == 0:
             return np.array([]), None
 
         df_sub = self.db[self.db[self.id_col].isin(unit_ids)].copy()
         df_sub.sort_values([self.id_col, self.time_col], inplace=True)
+
+        if self.exog_features:
+        # Forward fill numerical columns per unit
+            for unit in unit_ids:
+                mask = df_sub[self.id_col] == unit
+                # For numerical columns, forward fill
+                df_sub.loc[mask, self.exog_features] = df_sub.loc[mask, self.exog_features].fillna(method='ffill')
+            # After forward fill, any remaining NaNs (at the very beginning of a unit) fill with 0
+                df_sub[self.exog_features] = df_sub[self.exog_features].fillna(0)
 
         if self.exog_features:
             # Separate numerical and categorical features
@@ -448,10 +499,11 @@ class ARIMAModel:
                 endog_list.extend([np.nan] * self.gap_size)
                 if exog_values is not None:
                     # we add rows of NaNs with the same number of columns
-                    exog_list.extend([[np.nan] * exog_values.shape[1]] * self.gap_size)
+                    exog_list.extend([[0] * exog_values.shape[1]] * self.gap_size)
 
         endog = np.array(endog_list)
         exog = np.array(exog_list) if exog_values is not None else None
+
 
         return endog, exog
 
@@ -508,28 +560,36 @@ class ARIMAModel:
         return pd.DataFrame(all_preds)
 
     def evaluate(self, predictions_df):
-
         y_true = predictions_df['true']
         y_pred = predictions_df['predicted']
-        mae = mean_absolute_error(y_true, y_pred)
+
+        mape = mean_absolute_error(y_true, y_pred)
         rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        print(f"Test MAE: {mae:.4f}")
+        r2 = r2_score(y_true, y_pred)
+
+        print(f"Test MAPE: {mape:.4f}")
         print(f"Test RMSE: {rmse:.4f}")
-        return {'MAE': mae, 'RMSE': rmse}
+        print(f"Test R² : {r2:.4f}")
+
+        return {'MAPE': mape, 'RMSE': rmse, 'R2': r2}
 
     def plot_predictions(self, predictions_df, num_units=3):
+
         units = predictions_df[self.id_col].unique()[:num_units]
-        fig, axes = plt.subplots(len(units), 1, figsize=(10, 4*len(units)))
-        if len(units) == 1:
-            axes = [axes]
-        for ax, uid in zip(axes, units):
-            data = predictions_df[predictions_df[self.id_col] == uid].sort_values(self.time_col)
+
+        for i in units:
+            fig, ax = plt.subplots(figsize=(9, 4))
+
+            data = predictions_df[predictions_df[self.id_col] == i].sort_values(self.time_col)
+
             ax.plot(data[self.time_col], data['true'], label='True', marker='o')
             ax.plot(data[self.time_col], data['predicted'], label='Predicted', marker='x')
-            ax.set_title(f'Unit {uid}')
+
+            ax.set_title(f'{self.naming} {i}') 
             ax.set_xlabel(self.time_col)
             ax.set_ylabel(self.target)
             ax.legend()
             ax.grid(True)
+
         plt.tight_layout()
         plt.show()
